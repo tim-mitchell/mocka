@@ -48,6 +48,7 @@ FILTER_DIR = True
 # Without this, the __class__ properties wouldn't be set correctly
 _safe_super = super
 
+
 def _is_instance_mock(obj):
     # can't use isinstance on Mock objects because they override __class__
     # The base class for all mocks is NonCallableMock
@@ -75,6 +76,7 @@ def _get_return_spec(spec_signature):
     if spec_signature is None:
         return None
     return_anno = spec_signature.return_annotation
+    return_anno = _unwrap_type(return_anno)
     if isinstance(return_anno, type):
         return return_anno
     return None
@@ -371,6 +373,30 @@ class Base(object):
         pass
 
 
+def _unwrap_optional(type_hint):
+    #  Optional[T] is an alias for Union[T, None]
+    if hasattr(type_hint, '__origin__') and hasattr(type_hint, '__args__'):
+        # could be a typing.Union
+        if type_hint.__origin__ is not typing.Union:
+            return type_hint
+        for arg_type in type_hint.__args__:
+            if not arg_type is type(None):
+                return arg_type
+    return type_hint
+
+
+def _unwrap_type(type_hint):
+    # todo: typing.List, etc
+    original = type_hint
+    type_hint = _unwrap_optional(type_hint)
+    while isinstance(type_hint, typing._GenericAlias):
+        type_hint = type_hint.__origin__
+    if type_hint is typing.AnyStr:
+        type_hint = str
+    if type_hint is typing.Any:
+        type_hint = None
+    return type_hint
+
 
 class NonCallableMock(Base):
     """A non-callable version of `Mock`"""
@@ -449,11 +475,11 @@ class NonCallableMock(Base):
         If `spec_set` is True then only attributes on the spec can be set."""
         self._mock_add_spec(spec, spec_set)
 
-
     def _mock_add_spec(self, spec, spec_set, _spec_as_instance=False,
                        _eat_self=False):
         _spec_class = None
         _spec_signature = None
+        _spec_types = {}
 
         if spec is not None and not _is_list(spec):
             if isinstance(spec, type):
@@ -465,12 +491,18 @@ class NonCallableMock(Base):
             _spec_signature = res and res[1]
 
             spec = dir(spec)
-
+            try:
+                _spec_types = typing.get_type_hints(_spec_class)
+            except (AttributeError, TypeError):
+                pass
+            _spec_types = {k: _unwrap_type(v) for k, v in _spec_types.items()}
+            spec.extend(_spec_types.keys())
         __dict__ = self.__dict__
         __dict__['_spec_class'] = _spec_class
         __dict__['_spec_set'] = spec_set
         __dict__['_spec_signature'] = _spec_signature
         __dict__['_mock_methods'] = spec
+        __dict__['_spec_types'] = _spec_types
 
     def __get_return_value(self):
         ret = self._mock_return_value
@@ -881,6 +913,10 @@ class NonCallableMock(Base):
                 klass = Mock
         else:
             klass = _type.__mro__[1]
+        spec_types = self.__dict__['_spec_types']
+        kw['spec'] = spec_types.get(kw.get('name', None), None)
+        if kw['spec']:
+            kw['_spec_as_instance'] = True
         return klass(**kw)
 
 
