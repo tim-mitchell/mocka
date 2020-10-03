@@ -37,8 +37,8 @@ class D(object):
 
 
 class TestMocka(unittest.TestCase):
-    def test_create_autospec(self):
-        m = mocka.create_autospec(C, spec_set=True, instance=True)
+    def test_from_protocol(self):
+        m = mocka.from_protocol(C)
         self.assertIsInstance(m, C)
         a = m.bar('hello')
         self.assertIsInstance(a, A)
@@ -46,11 +46,11 @@ class TestMocka(unittest.TestCase):
         self.assertIsInstance(m.a, int)
 
     def test_recursive_autospec(self):
-        m = mocka.create_autospec(C, spec_set=True, instance=True)
+        m = mocka.from_protocol(C)
         a = m.bar('hello')
         self.assertIsInstance(a.foo(4), list)
 
-    def test_unspecced_mock(self):
+    def test_untyped_mock(self):
         m = mocka.MagicMock()
         a = m.bar('hello')
         self.assertNotIsInstance(a, A)

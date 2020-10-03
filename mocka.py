@@ -2135,6 +2135,25 @@ class _Call(tuple):
 call = _Call(from_kall=False)
 
 
+def from_protocol(spec, _parent=None, _name=None, **kwargs):
+    """Create a mock object using a protocol class as a spec. Attributes on the
+    mock will use the corresponding attributes and annotations on the `spec`
+    object as their spec.
+
+    Functions or methods being mocked will have their arguments checked
+    to check that they are called with the correct signature.
+
+    Attempting to set attributes that don't exist as annotations
+    on the spec class will raise an `AttributeError`.
+
+    The return value of the mock (the instance of the class) will have the same spec.
+    The returned mock will only be callable if instances of the spec class are callable.
+
+    `from_protocol` also takes arbitrary keyword arguments that are passed to
+    the constructor of the created mock."""
+    return create_autospec(spec, spec_set=True, instance=True,
+                           _parent=_parent, _name=_name, **kwargs)
+
 
 def create_autospec(spec, spec_set=False, instance=False, _parent=None,
                     _name=None, **kwargs):
