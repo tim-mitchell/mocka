@@ -43,8 +43,12 @@ class TestMocka(unittest.TestCase):
         a = m.bar('hello')
         self.assertIsInstance(a, A)
         self.assertIsInstance(a.b, str)
-#        self.assertIsInstance(a.foo(4), list)
         self.assertIsInstance(m.a, int)
+
+    def test_recursive_autospec(self):
+        m = mocka.create_autospec(C, spec_set=True, instance=True)
+        a = m.bar('hello')
+        self.assertIsInstance(a.foo(4), list)
 
     def test_unspecced_mock(self):
         m = mocka.MagicMock()

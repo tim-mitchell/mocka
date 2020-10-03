@@ -512,9 +512,8 @@ class NonCallableMock(Base):
         if ret is DEFAULT:
             spec_return = _get_return_spec(self._spec_signature)
             instance = spec_return is not None
-            ret = self._get_child_mock(spec_set=spec_return, _spec_as_instance=instance,
-                                       _new_parent=self, _new_name='()'
-                                       )
+            ret = create_autospec(spec_return, spec_set=True, instance=instance,
+                                  _parent=self, _name='()')
             self.return_value = ret
         return ret
 
