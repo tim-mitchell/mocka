@@ -1,19 +1,27 @@
 # mocka
-mock library than understands annotations
+A unittest mock library than understands annotations
 
-A drop-in replacement for the builtin python mock module where annotations on spec objects are used to spec mocked attributes and methods.
+A drop-in replacement for the builtin python 3.7 unittest.mock module where annotations on spec objects are used to spec mocked attributes and methods.
 
 In addition to the standard `unittest.mock` functionality, a new `from_protocol` function
 is added.
 
 ```python
-from_protocol(C)
+import mocka
+
+m = mocka.from_protocol(C, **kwargs)
 ``` 
 is an alias for 
 ```python
-create_autospec(C, spec_set=True, instance=True)
+m = mocka.create_autospec(C, spec_set=True, instance=True, **kwargs)
 ```
+which is essentially the same as the `unittest.mock` method of the same name
+```python
 
+m = unittest.mock.create_autospec(C, spec_set=True, instance=True, **kwargs)
+```
+except that type-hints are used to spec the mocked attributes.
+ 
 When you have type-hinted code like this
 ```python
 class A(object):

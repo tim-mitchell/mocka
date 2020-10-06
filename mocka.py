@@ -2,7 +2,7 @@
 # Test tools for mocking and patching.
 # Maintained by Michael Foord
 # Backport for other versions of Python available from
-# http://pypi.python.org/pypi/mock
+# https://pypi.org/project/mock
 
 __all__ = (
     'Mock',
@@ -18,11 +18,10 @@ __all__ = (
     'NonCallableMagicMock',
     'mock_open',
     'PropertyMock',
+    'seal',
 )
 
-
 __version__ = '1.0'
-
 
 import inspect
 import pprint
@@ -32,15 +31,14 @@ from types import ModuleType
 import typing
 from functools import wraps, partial
 
-
 _builtins = {name for name in dir(builtins) if not name.startswith('_')}
 
 BaseExceptions = (BaseException,)
 if 'java' in sys.platform:
     # jython
     import java
-    BaseExceptions = (BaseException, java.lang.Throwable)
 
+    BaseExceptions = (BaseException, java.lang.Throwable)
 
 FILTER_DIR = True
 
@@ -57,26 +55,39 @@ def _is_instance_mock(obj):
 
 def _is_exception(obj):
     return (
-        isinstance(obj, BaseExceptions) or
-        isinstance(obj, type) and issubclass(obj, BaseExceptions)
+            isinstance(obj, BaseExceptions) or
+            isinstance(obj, type) and issubclass(obj, BaseExceptions)
     )
 
 
-class _slotted(object):
-    __slots__ = ['a']
+def _unwrap_optional(type_hint):
+    #  Optional[T] is an alias for Union[T, None]
+    if hasattr(type_hint, '__origin__') and hasattr(type_hint, '__args__'):
+        # could be a typing.Union
+        if type_hint.__origin__ is not typing.Union:
+            return type_hint
+        for arg_type in type_hint.__args__:
+            if not arg_type is type(None):
+                return arg_type
+    return type_hint
 
 
-DescriptorTypes = (
-    type(_slotted.a),
-    property,
-)
+def _unwrap_type_hint(type_hint):
+    type_hint = _unwrap_optional(type_hint)
+    while isinstance(type_hint, typing._GenericAlias):
+        type_hint = type_hint.__origin__
+    if type_hint is typing.AnyStr:
+        type_hint = str
+    if type_hint is typing.Any:
+        type_hint = None
+    return type_hint
 
 
 def _get_return_spec(spec_signature):
     if spec_signature is None:
         return None
     return_anno = spec_signature.return_annotation
-    return_anno = _unwrap_type(return_anno)
+    return_anno = _unwrap_type_hint(return_anno)
     if isinstance(return_anno, type):
         return return_anno
     return None
@@ -119,33 +130,25 @@ def _check_signature(func, mock, skipfirst, instance=False):
     if sig is None:
         return
     func, sig = sig
+
     def checksig(_mock_self, *args, **kwargs):
         sig.bind(*args, **kwargs)
+
     _copy_func_details(func, checksig)
     type(mock)._mock_check_sig = checksig
 
 
 def _copy_func_details(func, funcopy):
-    funcopy.__name__ = func.__name__
-    funcopy.__doc__ = func.__doc__
-    try:
-        funcopy.__text_signature__ = func.__text_signature__
-    except AttributeError:
-        pass
     # we explicitly don't copy func.__dict__ into this copy as it would
     # expose original attributes that should be mocked
-    try:
-        funcopy.__module__ = func.__module__
-    except AttributeError:
-        pass
-    try:
-        funcopy.__defaults__ = func.__defaults__
-    except AttributeError:
-        pass
-    try:
-        funcopy.__kwdefaults__ = func.__kwdefaults__
-    except AttributeError:
-        pass
+    for attribute in (
+            '__name__', '__doc__', '__text_signature__',
+            '__module__', '__defaults__', '__kwdefaults__',
+    ):
+        try:
+            setattr(funcopy, attribute, getattr(func, attribute))
+        except AttributeError:
+            pass
 
 
 def _callable(obj):
@@ -187,10 +190,12 @@ def _set_signature(mock, original, instance=False):
     skipfirst = isinstance(original, type)
     result = _get_signature_object(original, instance, skipfirst)
     if result is None:
-        return
+        return mock
     func, sig = result
+
     def checksig(*args, **kwargs):
         sig.bind(*args, **kwargs)
+
     _copy_func_details(func, checksig)
 
     name = original.__name__
@@ -200,7 +205,7 @@ def _set_signature(mock, original, instance=False):
     src = """def %s(*args, **kwargs):
     _checksig_(*args, **kwargs)
     return mock(*args, **kwargs)""" % name
-    exec (src, context)
+    exec(src, context)
     funcopy = context[name]
     _setup_func(funcopy, mock)
     return funcopy
@@ -215,12 +220,25 @@ def _setup_func(funcopy, mock):
 
     def assert_called_with(*args, **kwargs):
         return mock.assert_called_with(*args, **kwargs)
+
+    def assert_called(*args, **kwargs):
+        return mock.assert_called(*args, **kwargs)
+
+    def assert_not_called(*args, **kwargs):
+        return mock.assert_not_called(*args, **kwargs)
+
+    def assert_called_once(*args, **kwargs):
+        return mock.assert_called_once(*args, **kwargs)
+
     def assert_called_once_with(*args, **kwargs):
         return mock.assert_called_once_with(*args, **kwargs)
+
     def assert_has_calls(*args, **kwargs):
         return mock.assert_has_calls(*args, **kwargs)
+
     def assert_any_call(*args, **kwargs):
         return mock.assert_any_call(*args, **kwargs)
+
     def reset_mock():
         funcopy.method_calls = _CallList()
         funcopy.mock_calls = _CallList()
@@ -245,6 +263,9 @@ def _setup_func(funcopy, mock):
     funcopy.assert_has_calls = assert_has_calls
     funcopy.assert_any_call = assert_any_call
     funcopy.reset_mock = reset_mock
+    funcopy.assert_called = assert_called
+    funcopy.assert_not_called = assert_not_called
+    funcopy.assert_called_once = assert_called_once
 
     mock._mock_delegate = funcopy
 
@@ -255,15 +276,20 @@ def _is_magic(name):
 
 class _SentinelObject(object):
     "A unique, named, sentinel object."
+
     def __init__(self, name):
         self.name = name
 
     def __repr__(self):
         return 'sentinel.%s' % self.name
 
+    def __reduce__(self):
+        return 'sentinel.%s' % self.name
+
 
 class _Sentinel(object):
     """Access attributes to return a named object, usable as a sentinel."""
+
     def __init__(self):
         self._sentinels = {}
 
@@ -272,6 +298,9 @@ class _Sentinel(object):
             # Without this help(unittest.mock) raises an exception
             raise AttributeError
         return self._sentinels.setdefault(name, _SentinelObject(name))
+
+    def __reduce__(self):
+        return 'sentinel'
 
 
 sentinel = _Sentinel()
@@ -297,11 +326,13 @@ _allowed_names = {
 def _delegating_property(name):
     _allowed_names.add(name)
     _the_name = '_mock_' + name
+
     def _get(self, name=name, _the_name=_the_name):
         sig = self._mock_delegate
         if sig is None:
             return getattr(self, _the_name)
         return getattr(sig, name)
+
     def _set(self, value, name=name, _the_name=_the_name):
         sig = self._mock_delegate
         if sig is None:
@@ -310,7 +341,6 @@ def _delegating_property(name):
             setattr(sig, name, value)
 
     return property(_get, _set)
-
 
 
 class _CallList(list):
@@ -324,7 +354,7 @@ class _CallList(list):
             return False
 
         for i in range(0, len_self - len_value + 1):
-            sub_list = self[i:i+len_value]
+            sub_list = self[i:i + len_value]
             if sub_list == value:
                 return True
         return False
@@ -337,8 +367,8 @@ def _check_and_set_parent(parent, value, name, new_name):
     if not _is_instance_mock(value):
         return False
     if ((value._mock_name or value._mock_new_name) or
-        (value._mock_parent is not None) or
-        (value._mock_new_parent is not None)):
+            (value._mock_parent is not None) or
+            (value._mock_new_parent is not None)):
         return False
 
     _parent = parent
@@ -357,45 +387,25 @@ def _check_and_set_parent(parent, value, name, new_name):
         value._mock_name = name
     return True
 
+
 # Internal class to identify if we wrapped an iterator object or not.
 class _MockIter(object):
     def __init__(self, obj):
         self.obj = iter(obj)
+
     def __iter__(self):
         return self
+
     def __next__(self):
         return next(self.obj)
+
 
 class Base(object):
     _mock_return_value = DEFAULT
     _mock_side_effect = None
+
     def __init__(self, *args, **kwargs):
         pass
-
-
-def _unwrap_optional(type_hint):
-    #  Optional[T] is an alias for Union[T, None]
-    if hasattr(type_hint, '__origin__') and hasattr(type_hint, '__args__'):
-        # could be a typing.Union
-        if type_hint.__origin__ is not typing.Union:
-            return type_hint
-        for arg_type in type_hint.__args__:
-            if not arg_type is type(None):
-                return arg_type
-    return type_hint
-
-
-def _unwrap_type(type_hint):
-    # todo: typing.List, etc
-    original = type_hint
-    type_hint = _unwrap_optional(type_hint)
-    while isinstance(type_hint, typing._GenericAlias):
-        type_hint = type_hint.__origin__
-    if type_hint is typing.AnyStr:
-        type_hint = str
-    if type_hint is typing.Any:
-        type_hint = None
-    return type_hint
 
 
 class NonCallableMock(Base):
@@ -409,12 +419,11 @@ class NonCallableMock(Base):
         instance = object.__new__(new)
         return instance
 
-
     def __init__(
             self, spec=None, wraps=None, name=None, spec_set=None,
             parent=None, _spec_state=None, _new_name='', _new_parent=None,
             _spec_as_instance=False, _eat_self=None, unsafe=False, **kwargs
-        ):
+    ):
         if _new_parent is None:
             _new_parent = parent
 
@@ -423,6 +432,7 @@ class NonCallableMock(Base):
         __dict__['_mock_name'] = name
         __dict__['_mock_new_name'] = _new_name
         __dict__['_mock_new_parent'] = _new_parent
+        __dict__['_mock_sealed'] = False
 
         if spec_set is not None:
             spec = spec_set
@@ -453,7 +463,6 @@ class NonCallableMock(Base):
             _spec_state
         )
 
-
     def attach_mock(self, mock, attribute):
         """
         Attach a mock as an attribute of this one, replacing its name and
@@ -465,7 +474,6 @@ class NonCallableMock(Base):
         mock._mock_new_name = None
 
         setattr(self, attribute, mock)
-
 
     def mock_add_spec(self, spec, spec_set=False):
         """Add a spec to a mock. `spec` can either be an object or a
@@ -495,7 +503,7 @@ class NonCallableMock(Base):
                 _spec_types = typing.get_type_hints(_spec_class)
             except (AttributeError, TypeError):
                 pass
-            _spec_types = {k: _unwrap_type(v) for k, v in _spec_types.items()}
+            _spec_types = {k: _unwrap_type_hint(v) for k, v in _spec_types.items()}
             spec.extend(_spec_types.keys())
         __dict__ = self.__dict__
         __dict__['_spec_class'] = _spec_class
@@ -517,7 +525,6 @@ class NonCallableMock(Base):
             self.return_value = ret
         return ret
 
-
     def __set_return_value(self, value):
         if self._mock_delegate is not None:
             self._mock_delegate.return_value = value
@@ -528,7 +535,6 @@ class NonCallableMock(Base):
     __return_value_doc = "The value to be returned when the mock is called."
     return_value = property(__get_return_value, __set_return_value,
                             __return_value_doc)
-
 
     @property
     def __class__(self):
@@ -541,7 +547,6 @@ class NonCallableMock(Base):
     call_args = _delegating_property('call_args')
     call_args_list = _delegating_property('call_args_list')
     mock_calls = _delegating_property('mock_calls')
-
 
     def __get_side_effect(self):
         delegated = self._mock_delegate
@@ -564,8 +569,7 @@ class NonCallableMock(Base):
 
     side_effect = property(__get_side_effect, __set_side_effect)
 
-
-    def reset_mock(self, visited=None):
+    def reset_mock(self, visited=None, *, return_value=False, side_effect=False):
         "Restore the mock object to its initial state."
         if visited is None:
             visited = []
@@ -580,6 +584,11 @@ class NonCallableMock(Base):
         self.call_args_list = _CallList()
         self.method_calls = _CallList()
 
+        if return_value:
+            self._mock_return_value = DEFAULT
+        if side_effect:
+            self._mock_side_effect = None
+
         for child in self._mock_children.values():
             if isinstance(child, _SpecState):
                 continue
@@ -588,7 +597,6 @@ class NonCallableMock(Base):
         ret = self._mock_return_value
         if _is_instance_mock(ret) and ret is not self:
             ret.reset_mock(visited)
-
 
     def configure_mock(self, **kwargs):
         """Set attributes on the mock through keyword arguments.
@@ -610,7 +618,6 @@ class NonCallableMock(Base):
             for entry in args:
                 obj = getattr(obj, entry)
             setattr(obj, final, val)
-
 
     def __getattr__(self, name):
         if name in {'_mock_methods', '_mock_unsafe'}:
@@ -638,19 +645,18 @@ class NonCallableMock(Base):
                 parent=self, name=name, wraps=wraps, _new_name=name,
                 _new_parent=self
             )
-            self._mock_children[name]  = result
+            self._mock_children[name] = result
 
         elif isinstance(result, _SpecState):
             result = create_autospec(
                 result.spec, result.spec_set, result.instance,
                 result.parent, result.name
             )
-            self._mock_children[name]  = result
+            self._mock_children[name] = result
 
         return result
 
-
-    def __repr__(self):
+    def _extract_mock_name(self):
         _name_list = [self._mock_new_name]
         _parent = self._mock_new_parent
         last = self
@@ -680,7 +686,10 @@ class NonCallableMock(Base):
             if _name_list[1] not in ('()', '().'):
                 _first += '.'
         _name_list[0] = _first
-        name = ''.join(_name_list)
+        return ''.join(_name_list)
+
+    def __repr__(self):
+        name = self._extract_mock_name()
 
         name_string = ''
         if name not in ('mock', 'mock.'):
@@ -699,7 +708,6 @@ class NonCallableMock(Base):
             id(self)
         )
 
-
     def __dir__(self):
         """Filter the output of `dir(mock)` to only useful members."""
         if not FILTER_DIR:
@@ -715,14 +723,13 @@ class NonCallableMock(Base):
         return sorted(set(extras + from_type + from_dict +
                           list(self._mock_children)))
 
-
     def __setattr__(self, name, value):
         if name in _allowed_names:
             # property setters go through here
             return object.__setattr__(self, name, value)
         elif (self._spec_set and self._mock_methods is not None and
-            name not in self._mock_methods and
-            name not in self.__dict__):
+              name not in self._mock_methods and
+              name not in self.__dict__):
             raise AttributeError("Mock object has no attribute '%s'" % name)
         elif name in _unsupported_magics:
             msg = 'Attempting to set unsupported magic method %r.' % name
@@ -747,8 +754,12 @@ class NonCallableMock(Base):
         else:
             if _check_and_set_parent(self, value, name, name):
                 self._mock_children[name] = value
-        return object.__setattr__(self, name, value)
 
+        if self._mock_sealed and not hasattr(self, name):
+            mock_name = f'{self._extract_mock_name()}.{name}'
+            raise AttributeError(f'Cannot set {mock_name}')
+
+        return object.__setattr__(self, name, value)
 
     def __delattr__(self, name):
         if name in _all_magics and name in type(self).__dict__:
@@ -768,11 +779,9 @@ class NonCallableMock(Base):
             del self._mock_children[name]
         self._mock_children[name] = _deleted
 
-
     def _format_mock_call_signature(self, args, kwargs):
         name = self._mock_name or 'mock'
         return _format_call_signature(name, args, kwargs)
-
 
     def _format_mock_failure_message(self, args, kwargs):
         message = 'Expected call: %s\nActual call: %s'
@@ -783,10 +792,9 @@ class NonCallableMock(Base):
         actual_string = self._format_mock_call_signature(*call_args)
         return message % (expected_string, actual_string)
 
-
     def _call_matcher(self, _call):
         """
-        Given a call (or simply a (args, kwargs) tuple), return a
+        Given a call (or simply an (args, kwargs) tuple), return a
         comparison key suitable for matching with other calls.
         This is a best effort method which relies on the spec's signature,
         if available, or falls back on the arguments themselves.
@@ -814,6 +822,24 @@ class NonCallableMock(Base):
                    (self._mock_name or 'mock', self.call_count))
             raise AssertionError(msg)
 
+    def assert_called(_mock_self):
+        """assert that the mock was called at least once
+        """
+        self = _mock_self
+        if self.call_count == 0:
+            msg = ("Expected '%s' to have been called." %
+                   self._mock_name or 'mock')
+            raise AssertionError(msg)
+
+    def assert_called_once(_mock_self):
+        """assert that the mock was called only once.
+        """
+        self = _mock_self
+        if not self.call_count == 1:
+            msg = ("Expected '%s' to have been called once. Called %s times." %
+                   (self._mock_name or 'mock', self.call_count))
+            raise AssertionError(msg)
+
     def assert_called_with(_mock_self, *args, **kwargs):
         """assert that the mock was called with the specified arguments.
 
@@ -827,23 +853,22 @@ class NonCallableMock(Base):
         def _error_message():
             msg = self._format_mock_failure_message(args, kwargs)
             return msg
+
         expected = self._call_matcher((args, kwargs))
         actual = self._call_matcher(self.call_args)
         if expected != actual:
             cause = expected if isinstance(expected, Exception) else None
             raise AssertionError(_error_message()) from cause
 
-
     def assert_called_once_with(_mock_self, *args, **kwargs):
-        """assert that the mock was called exactly once and with the specified
-        arguments."""
+        """assert that the mock was called exactly once and that that call was
+        with the specified arguments."""
         self = _mock_self
         if not self.call_count == 1:
             msg = ("Expected '%s' to be called once. Called %s times." %
                    (self._mock_name or 'mock', self.call_count))
             raise AssertionError(msg)
         return self.assert_called_with(*args, **kwargs)
-
 
     def assert_has_calls(self, calls, any_order=False):
         """assert the mock has been called with the specified calls.
@@ -862,7 +887,7 @@ class NonCallableMock(Base):
             if expected not in all_calls:
                 raise AssertionError(
                     'Calls not found.\nExpected: %r\n'
-                    'Actual: %r' % (calls, self.mock_calls)
+                    'Actual: %r' % (_CallList(calls), self.mock_calls)
                 ) from cause
             return
 
@@ -879,7 +904,6 @@ class NonCallableMock(Base):
                 '%r not all found in call list' % (tuple(not_found),)
             ) from cause
 
-
     def assert_any_call(self, *args, **kwargs):
         """assert the mock has been called with the specified arguments.
 
@@ -895,7 +919,6 @@ class NonCallableMock(Base):
                 '%s call not found' % expected_string
             ) from cause
 
-
     def _get_child_mock(self, **kw):
         """Create the child mocks for attributes and return value.
         By default child mocks will be the same type as the parent.
@@ -908,16 +931,21 @@ class NonCallableMock(Base):
         if not issubclass(_type, CallableMixin):
             if issubclass(_type, NonCallableMagicMock):
                 klass = MagicMock
-            elif issubclass(_type, NonCallableMock) :
+            elif issubclass(_type, NonCallableMock):
                 klass = Mock
         else:
             klass = _type.__mro__[1]
+
+        if self._mock_sealed:
+            attribute = "." + kw["name"] if "name" in kw else "()"
+            mock_name = self._extract_mock_name() + attribute
+            raise AttributeError(mock_name)
+
         spec_types = self.__dict__['_spec_types']
         kw['spec'] = spec_types.get(kw.get('name', None), None)
         if kw['spec']:
             kw['_spec_as_instance'] = True
         return klass(**kw)
-
 
 
 def _try_iter(obj):
@@ -935,7 +963,6 @@ def _try_iter(obj):
         return obj
 
 
-
 class CallableMixin(Base):
 
     def __init__(self, spec=None, side_effect=None, return_value=DEFAULT,
@@ -950,18 +977,15 @@ class CallableMixin(Base):
 
         self.side_effect = side_effect
 
-
     def _mock_check_sig(self, *args, **kwargs):
         # stub method that can be replaced with one with a specific signature
         pass
-
 
     def __call__(_mock_self, *args, **kwargs):
         # can't use self in-case a function / method we are mocking uses self
         # in the signature
         _mock_self._mock_check_sig(*args, **kwargs)
         return _mock_self._mock_call(*args, **kwargs)
-
 
     def _mock_call(_mock_self, *args, **kwargs):
         self = _mock_self
@@ -1029,7 +1053,7 @@ class CallableMixin(Base):
             ret_val = effect(*args, **kwargs)
 
         if (self._mock_wraps is not None and
-             self._mock_return_value is DEFAULT):
+                self._mock_return_value is DEFAULT):
             return self._mock_wraps(*args, **kwargs)
         if ret_val is DEFAULT:
             ret_val = self.return_value
@@ -1088,7 +1112,6 @@ class Mock(CallableMixin, NonCallableMock):
     """
 
 
-
 def _dot_lookup(thing, comp, import_path):
     try:
         return getattr(thing, comp)
@@ -1114,14 +1137,13 @@ def _is_started(patcher):
 
 
 class _patch(object):
-
     attribute_name = None
     _active_patches = []
 
     def __init__(
             self, getter, attribute, new, spec, create,
             spec_set, autospec, new_callable, kwargs
-        ):
+    ):
         if new_callable is not None:
             if new is not DEFAULT:
                 raise ValueError(
@@ -1144,7 +1166,6 @@ class _patch(object):
         self.kwargs = kwargs
         self.additional_patchers = []
 
-
     def copy(self):
         patcher = _patch(
             self.getter, self.attribute, self.new, self.spec,
@@ -1157,12 +1178,10 @@ class _patch(object):
         ]
         return patcher
 
-
     def __call__(self, func):
         if isinstance(func, type):
             return self.decorate_class(func)
         return self.decorate_callable(func)
-
 
     def decorate_class(self, klass):
         for attr in dir(klass):
@@ -1176,7 +1195,6 @@ class _patch(object):
             patcher = self.copy()
             setattr(klass, attr, patcher(attr_value))
         return klass
-
 
     def decorate_callable(self, func):
         if hasattr(func, 'patchings'):
@@ -1202,7 +1220,7 @@ class _patch(object):
                 return func(*args, **keywargs)
             except:
                 if (patching not in entered_patchers and
-                    _is_started(patching)):
+                        _is_started(patching)):
                     # the patcher may have been started, but an exception
                     # raised whilst entering one of its additional_patchers
                     entered_patchers.append(patching)
@@ -1216,7 +1234,6 @@ class _patch(object):
 
         patched.patchings = [self]
         return patched
-
 
     def get_original(self):
         target = self.getter()
@@ -1241,7 +1258,6 @@ class _patch(object):
             )
         return original, local
 
-
     def __enter__(self):
         """Perform the patch."""
         new, spec, spec_set = self.new, self.spec, self.spec_set
@@ -1260,7 +1276,7 @@ class _patch(object):
         if spec is not None and autospec is not None:
             raise TypeError("Can't specify spec and autospec")
         if ((spec is not None or autospec is not None) and
-            spec_set not in (True, None)):
+                spec_set not in (True, None)):
             raise TypeError("Can't provide explicit spec_set *and* spec or autospec")
 
         original, local = self.get_original()
@@ -1309,7 +1325,7 @@ class _patch(object):
 
             # add a name to mocks
             if (isinstance(Klass, type) and
-                issubclass(Klass, NonCallableMock) and self.attribute):
+                    issubclass(Klass, NonCallableMock) and self.attribute):
                 _kwargs['name'] = self.attribute
 
             _kwargs.update(kwargs)
@@ -1322,7 +1338,7 @@ class _patch(object):
                 if spec_set is not None:
                     this_spec = spec_set
                 if (not _is_list(this_spec) and not
-                    _instance_callable(this_spec)):
+                _instance_callable(this_spec)):
                     Klass = NonCallableMagicMock
 
                 _kwargs.pop('name')
@@ -1358,7 +1374,7 @@ class _patch(object):
         if self.attribute_name is not None:
             extra_args = {}
             if self.new is DEFAULT:
-                extra_args[self.attribute_name] =  new
+                extra_args[self.attribute_name] = new
             for patching in self.additional_patchers:
                 arg = patching.__enter__()
                 if patching.new is DEFAULT:
@@ -1366,7 +1382,6 @@ class _patch(object):
             return extra_args
 
         return new
-
 
     def __exit__(self, *exc_info):
         """Undo the patch."""
@@ -1378,9 +1393,9 @@ class _patch(object):
         else:
             delattr(self.target, self.attribute)
             if not self.create and (not hasattr(self.target, self.attribute) or
-                        self.attribute in ('__doc__', '__module__',
-                                           '__defaults__', '__annotations__',
-                                           '__kwdefaults__')):
+                                    self.attribute in ('__doc__', '__module__',
+                                                       '__defaults__', '__annotations__',
+                                                       '__kwdefaults__')):
                 # needed for proxy objects like django settings
                 setattr(self.target, self.attribute, self.temp_original)
 
@@ -1391,13 +1406,11 @@ class _patch(object):
             if _is_started(patcher):
                 patcher.__exit__(*exc_info)
 
-
     def start(self):
         """Activate a patch, returning any created mock."""
         result = self.__enter__()
         self._active_patches.append(self)
         return result
-
 
     def stop(self):
         """Stop an active patch."""
@@ -1408,7 +1421,6 @@ class _patch(object):
             pass
 
         return self.__exit__()
-
 
 
 def _get_target(target):
@@ -1425,7 +1437,7 @@ def _patch_object(
         target, attribute, new=DEFAULT, spec=None,
         create=False, spec_set=None, autospec=None,
         new_callable=None, **kwargs
-    ):
+):
     """
     patch the named member (`attribute`) on an object (`target`) with a mock
     object.
@@ -1498,7 +1510,7 @@ def _patch_multiple(target, spec=None, create=False, spec_set=None,
 def patch(
         target, new=DEFAULT, spec=None, create=False,
         spec_set=None, autospec=None, new_callable=None, **kwargs
-    ):
+):
     """
     `patch` acts as a function decorator, class decorator or a context
     manager. Inside the body of the function or with statement, the `target`
@@ -1610,10 +1622,10 @@ class _patch_dict(object):
         self.clear = clear
         self._original = None
 
-
     def __call__(self, f):
         if isinstance(f, type):
             return self.decorate_class(f)
+
         @wraps(f)
         def _inner(*args, **kw):
             self._patch_dict()
@@ -1624,22 +1636,19 @@ class _patch_dict(object):
 
         return _inner
 
-
     def decorate_class(self, klass):
         for attr in dir(klass):
             attr_value = getattr(klass, attr)
             if (attr.startswith(patch.TEST_PREFIX) and
-                 hasattr(attr_value, "__call__")):
+                    hasattr(attr_value, "__call__")):
                 decorator = _patch_dict(self.in_dict, self.values, self.clear)
                 decorated = decorator(attr_value)
                 setattr(klass, attr, decorated)
         return klass
 
-
     def __enter__(self):
         """Patch the dict."""
         self._patch_dict()
-
 
     def _patch_dict(self):
         values = self.values
@@ -1666,7 +1675,6 @@ class _patch_dict(object):
             for key in values:
                 in_dict[key] = values[key]
 
-
     def _unpatch_dict(self):
         in_dict = self.in_dict
         original = self._original
@@ -1678,7 +1686,6 @@ class _patch_dict(object):
         except AttributeError:
             for key in original:
                 in_dict[key] = original[key]
-
 
     def __exit__(self, *args):
         """Unpatch the dict."""
@@ -1739,13 +1746,16 @@ _non_defaults = {
     '__reduce__', '__reduce_ex__', '__getinitargs__', '__getnewargs__',
     '__getstate__', '__setstate__', '__getformat__', '__setformat__',
     '__repr__', '__dir__', '__subclasses__', '__format__',
+    '__getnewargs_ex__',
 }
 
 
 def _get_method(name, func):
     "Turns a callable object (like a mock) into a real function"
+
     def method(self, *args, **kw):
         return func(self, *args, **kw)
+
     method.__name__ = name
     return method
 
@@ -1760,7 +1770,7 @@ _all_magics = _magics | _non_defaults
 _unsupported_magics = {
     '__getattr__', '__setattr__',
     '__init__', '__new__', '__prepare__'
-    '__instancecheck__', '__subclasscheck__',
+                           '__instancecheck__', '__subclasscheck__',
     '__del__'
 }
 
@@ -1791,15 +1801,23 @@ def _get_eq(self):
         ret_val = self.__eq__._mock_return_value
         if ret_val is not DEFAULT:
             return ret_val
-        return self is other
+        if self is other:
+            return True
+        return NotImplemented
+
     return __eq__
+
 
 def _get_ne(self):
     def __ne__(other):
         if self.__ne__._mock_return_value is not DEFAULT:
             return DEFAULT
-        return self is not other
+        if self is other:
+            return False
+        return NotImplemented
+
     return __ne__
+
 
 def _get_iter(self):
     def __iter__():
@@ -1809,14 +1827,15 @@ def _get_iter(self):
         # if ret_val was already an iterator, then calling iter on it should
         # return the iterator unchanged
         return iter(ret_val)
+
     return __iter__
+
 
 _side_effect_methods = {
     '__eq__': _get_eq,
     '__ne__': _get_ne,
     '__iter__': _get_iter,
 }
-
 
 
 def _set_return_value(mock, method, name):
@@ -1841,13 +1860,11 @@ def _set_return_value(mock, method, name):
         method.side_effect = side_effector(mock)
 
 
-
 class MagicMixin(object):
     def __init__(self, *args, **kw):
         self._mock_set_magics()  # make magic work for kwargs in init
         _safe_super(MagicMixin, self).__init__(*args, **kw)
         self._mock_set_magics()  # fix magic broken by upper level init
-
 
     def _mock_set_magics(self):
         these_magics = _magics
@@ -1871,9 +1888,9 @@ class MagicMixin(object):
             setattr(_type, entry, MagicProxy(entry, self))
 
 
-
 class NonCallableMagicMock(MagicMixin, NonCallableMock):
     """A version of `MagicMock` that isn't callable."""
+
     def mock_add_spec(self, spec, spec_set=False):
         """Add a spec to a mock. `spec` can either be an object or a
         list of strings. Only attributes on the `spec` can be fetched as
@@ -1882,7 +1899,6 @@ class NonCallableMagicMock(MagicMixin, NonCallableMock):
         If `spec_set` is True then only attributes on the spec can be set."""
         self._mock_add_spec(spec, spec_set)
         self._mock_set_magics()
-
 
 
 class MagicMock(MagicMixin, Mock):
@@ -1896,6 +1912,7 @@ class MagicMock(MagicMixin, Mock):
 
     Attributes and the return value of a `MagicMock` will also be `MagicMocks`.
     """
+
     def mock_add_spec(self, spec, spec_set=False):
         """Add a spec to a mock. `spec` can either be an object or a
         list of strings. Only attributes on the `spec` can be fetched as
@@ -1904,7 +1921,6 @@ class MagicMock(MagicMixin, Mock):
         If `spec_set` is True then only attributes on the spec can be set."""
         self._mock_add_spec(spec, spec_set)
         self._mock_set_magics()
-
 
 
 class MagicProxy(object):
@@ -1929,7 +1945,6 @@ class MagicProxy(object):
         return self.create_mock()
 
 
-
 class _ANY(object):
     "A helper object that compares equal to everything."
 
@@ -1942,8 +1957,8 @@ class _ANY(object):
     def __repr__(self):
         return '<ANY>'
 
-ANY = _ANY()
 
+ANY = _ANY()
 
 
 def _format_call_signature(name, args, kwargs):
@@ -1961,7 +1976,6 @@ def _format_call_signature(name, args, kwargs):
         formatted_args += kwargs_string
 
     return message % formatted_args
-
 
 
 class _Call(tuple):
@@ -1983,9 +1997,9 @@ class _Call(tuple):
 
     If the _Call has no name then it will match any name.
     """
-    def __new__(cls, value=(), name=None, parent=None, two=False,
+
+    def __new__(cls, value=(), name='', parent=None, two=False,
                 from_kall=True):
-        name = ''
         args = ()
         kwargs = {}
         _len = len(value)
@@ -2015,13 +2029,11 @@ class _Call(tuple):
 
         return tuple.__new__(cls, (name, args, kwargs))
 
-
     def __init__(self, value=(), name=None, parent=None, two=False,
                  from_kall=True):
         self.name = name
         self.parent = parent
         self.from_kall = from_kall
-
 
     def __eq__(self, other):
         if other is ANY:
@@ -2073,9 +2085,7 @@ class _Call(tuple):
         # this order is important for ANY to work!
         return (other_args, other_kwargs) == (self_args, self_kwargs)
 
-
     __ne__ = object.__ne__
-
 
     def __call__(self, *args, **kwargs):
         if self.name is None:
@@ -2084,13 +2094,11 @@ class _Call(tuple):
         name = self.name + '()'
         return _Call((self.name, args, kwargs), name=name, parent=self)
 
-
     def __getattr__(self, attr):
         if self.name is None:
             return _Call(name=attr, from_kall=False)
         name = '%s.%s' % (self.name, attr)
         return _Call(name=name, parent=self, from_kall=False)
-
 
     def count(self, *args, **kwargs):
         return self.__getattr__('count')(*args, **kwargs)
@@ -2117,7 +2125,6 @@ class _Call(tuple):
             else:
                 name = 'call%s' % name
         return _format_call_signature(name, args, kwargs)
-
 
     def call_list(self):
         """For a call object that represents multiple calls, `call_list`
@@ -2193,7 +2200,7 @@ def create_autospec(spec, spec_set=False, instance=False, _parent=None,
     _kwargs.update(kwargs)
 
     Klass = MagicMock
-    if type(spec) in DescriptorTypes:
+    if inspect.isdatadescriptor(spec):
         # descriptors don't have a spec
         # because we don't know what type they return
         _kwargs = {}
@@ -2335,8 +2342,8 @@ MethodWrapperTypes = (
     type(ANY.__eq__.__get__),
 )
 
-
 file_spec = None
+
 
 def _iterate_read_data(read_data):
     # Helper for mock_open:
@@ -2371,6 +2378,7 @@ def mock_open(mock=None, read_data=''):
     `read_data` is a string for the `read` methoddline`, and `readlines` of the
     file handle to return.  This is an empty string by default.
     """
+
     def _readlines_side_effect(*args, **kwargs):
         if handle.readlines.return_value is not None:
             return handle.readlines.return_value
@@ -2389,7 +2397,6 @@ def mock_open(mock=None, read_data=''):
             yield line
         while True:
             yield type(read_data)()
-
 
     global file_spec
     if file_spec is None:
@@ -2436,10 +2443,35 @@ class PropertyMock(Mock):
     Fetching a `PropertyMock` instance from an object calls the mock, with
     no args. Setting it calls the mock with the value being set.
     """
+
     def _get_child_mock(self, **kwargs):
         return MagicMock(**kwargs)
 
     def __get__(self, obj, obj_type):
         return self()
+
     def __set__(self, obj, val):
         self(val)
+
+
+def seal(mock):
+    """Disable the automatic generation of "submocks"
+
+    Given an input Mock, seals it to ensure no further mocks will be generated
+    when accessing an attribute that was not already defined.
+
+    Submocks are defined as all mocks which were created DIRECTLY from the
+    parent. If a mock is assigned to an attribute of an existing mock,
+    it is not considered a submock.
+
+    """
+    mock._mock_sealed = True
+    for attr in dir(mock):
+        try:
+            m = getattr(mock, attr)
+        except AttributeError:
+            continue
+        if not isinstance(m, NonCallableMock):
+            continue
+        if m._mock_new_parent is mock:
+            seal(m)
