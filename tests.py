@@ -14,9 +14,11 @@ class A(object):
 
 class C(object):
     a: int
+    aa: A
 
     def __init__(self, a: int):
         self.a = a
+        self.aa = A('bb')
 
     def bar(self, foo: str) -> A:
         return A(foo)
@@ -41,9 +43,14 @@ class TestMocka(unittest.TestCase):
         m = mocka.from_protocol(C)
         self.assertIsInstance(m, C)
         a = m.bar('hello')
+        aa = m.aa
+        self.assertIsInstance(m.a, int)
         self.assertIsInstance(a, A)
         self.assertIsInstance(a.b, str)
-        self.assertIsInstance(m.a, int)
+        self.assertIsInstance(a.foo(5), list)
+        self.assertIsInstance(aa, A)
+        self.assertIsInstance(aa.b, str)
+        self.assertIsInstance(aa.foo(4), list)
 
     def test_recursive_autospec(self):
         m = mocka.from_protocol(C)

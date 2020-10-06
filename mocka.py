@@ -31,14 +31,15 @@ from types import ModuleType
 import typing
 from functools import wraps, partial
 
+
 _builtins = {name for name in dir(builtins) if not name.startswith('_')}
 
 BaseExceptions = (BaseException,)
 if 'java' in sys.platform:
     # jython
     import java
-
     BaseExceptions = (BaseException, java.lang.Throwable)
+
 
 FILTER_DIR = True
 
@@ -55,8 +56,8 @@ def _is_instance_mock(obj):
 
 def _is_exception(obj):
     return (
-            isinstance(obj, BaseExceptions) or
-            isinstance(obj, type) and issubclass(obj, BaseExceptions)
+        isinstance(obj, BaseExceptions) or
+        isinstance(obj, type) and issubclass(obj, BaseExceptions)
     )
 
 
@@ -133,7 +134,6 @@ def _check_signature(func, mock, skipfirst, instance=False):
 
     def checksig(_mock_self, *args, **kwargs):
         sig.bind(*args, **kwargs)
-
     _copy_func_details(func, checksig)
     type(mock)._mock_check_sig = checksig
 
@@ -142,8 +142,8 @@ def _copy_func_details(func, funcopy):
     # we explicitly don't copy func.__dict__ into this copy as it would
     # expose original attributes that should be mocked
     for attribute in (
-            '__name__', '__doc__', '__text_signature__',
-            '__module__', '__defaults__', '__kwdefaults__',
+        '__name__', '__doc__', '__text_signature__',
+        '__module__', '__defaults__', '__kwdefaults__',
     ):
         try:
             setattr(funcopy, attribute, getattr(func, attribute))
@@ -276,7 +276,6 @@ def _is_magic(name):
 
 class _SentinelObject(object):
     "A unique, named, sentinel object."
-
     def __init__(self, name):
         self.name = name
 
@@ -289,7 +288,6 @@ class _SentinelObject(object):
 
 class _Sentinel(object):
     """Access attributes to return a named object, usable as a sentinel."""
-
     def __init__(self):
         self._sentinels = {}
 
@@ -367,8 +365,8 @@ def _check_and_set_parent(parent, value, name, new_name):
     if not _is_instance_mock(value):
         return False
     if ((value._mock_name or value._mock_new_name) or
-            (value._mock_parent is not None) or
-            (value._mock_new_parent is not None)):
+        (value._mock_parent is not None) or
+        (value._mock_new_parent is not None)):
         return False
 
     _parent = parent
@@ -942,9 +940,12 @@ class NonCallableMock(Base):
             raise AttributeError(mock_name)
 
         spec_types = self.__dict__['_spec_types']
-        kw['spec'] = spec_types.get(kw.get('name', None), None)
-        if kw['spec']:
-            kw['_spec_as_instance'] = True
+        spec = spec_types.get(kw.get('name', None), None)
+        if spec is not None:
+            attribute = "." + kw["name"] if "name" in kw else "()"
+            mock_name = self._extract_mock_name() + attribute
+            return create_autospec(spec, spec_set=True, instance=True,
+                                   _parent=self, _name=mock_name)
         return klass(**kw)
 
 
