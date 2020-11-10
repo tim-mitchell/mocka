@@ -1,4 +1,4 @@
-import mocka
+import mock_protocol
 import unittest
 import typing
 
@@ -38,9 +38,9 @@ class D(object):
         return A(foo)
 
 
-class TestMocka(unittest.TestCase):
+class TestMockProtocol(unittest.TestCase):
     def test_from_protocol(self):
-        m = mocka.from_protocol(C)
+        m = mock_protocol.from_protocol(C)
         self.assertIsInstance(m, C)
         a = m.bar('hello')
         aa = m.aa
@@ -53,17 +53,17 @@ class TestMocka(unittest.TestCase):
         self.assertIsInstance(aa.foo(4), list)
 
     def test_recursive_autospec(self):
-        m = mocka.from_protocol(C)
+        m = mock_protocol.from_protocol(C)
         a = m.bar('hello')
         self.assertIsInstance(a.foo(4), list)
 
     def test_untyped_mock(self):
-        m = mocka.MagicMock()
+        m = mock_protocol.MagicMock()
         a = m.bar('hello')
         self.assertNotIsInstance(a, A)
 
     def test_create_autospec_typing_types(self):
-        m = mocka.create_autospec(D, spec_set=True, instance=True)
+        m = mock_protocol.create_autospec(D, spec_set=True, instance=True)
         a = m.bar('hello')
         self.assertIsInstance(a, A)
         self.assertIsInstance(m.a, int)

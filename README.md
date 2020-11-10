@@ -1,5 +1,5 @@
-# mocka
-A unittest mock library than understands annotations
+# mock_protocol
+A unittest mock library than understands protocols and annotations
 
 A drop-in replacement for the builtin python 3.7 unittest.mock module where annotations on spec objects are used to spec mocked attributes and methods.
 
@@ -7,13 +7,13 @@ In addition to the standard `unittest.mock` functionality, a new `from_protocol`
 is added.
 
 ```python
-import mocka
+import mock_protocol
 
-m = mocka.from_protocol(C, **kwargs)
+m = mock_protocol.from_protocol(C, **kwargs)
 ``` 
 is an alias for 
 ```python
-m = mocka.create_autospec(C, spec_set=True, instance=True, **kwargs)
+m = mock_protocol.create_autospec(C, spec_set=True, instance=True, **kwargs)
 ```
 which is essentially the same as the `unittest.mock` method of the same name
 ```python
@@ -43,9 +43,9 @@ class C(object):
     def bar(self, foo: str) -> A:
         return A(foo)
 ```
-Then mocking them with mocka will use the type hints as specs for child mocks.
+Then mocking them with mock_protocol will use the type hints as specs for child mocks.
 ```python
-m = mocka.from_protocol(C)
+m = mock_protocol.from_protocol(C)
 a = m.bar('hello')
 
 # the following are all True
@@ -55,7 +55,7 @@ isinstance(m.a, int)
 isinstance(a.foo(4), list)
 ```
 
-`mocka` also understands common `typing` types such as `Dict` and `Tuple` and `Optional`
+`mock_protocol` also understands common `typing` types such as `Dict` and `Tuple` and `Optional`
 
 ```python
 import typing
@@ -72,7 +72,7 @@ class D(object):
     def bar(self, foo: str) -> typing.Optional[A]:
         return A(foo)
 
-m = mocka.from_protocol(D)
+m = mock_protocol.from_protocol(D)
 a = m.bar('hello')
 
 # the following are all True

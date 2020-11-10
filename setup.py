@@ -10,7 +10,7 @@ long_description = (here / 'README.md').read_text(encoding='utf-8')
 # Fields marked as "Optional" may be commented out.
 
 setup(
-    name='mocka',
+    name='mock_protocol',
     version='1.0.0',  # Required
     description='A unittest mock library than understands annotations',
     long_description=long_description,
@@ -42,7 +42,7 @@ setup(
         'Programming Language :: Python :: 3 :: Only',
     ],
     keywords='test unittest mock protocol annotation',
-    py_modules=["mocka"],
+    py_modules=["mock_protocol"],
     python_requires='>=3.6, <4',
     install_requires=[],
     project_urls={
